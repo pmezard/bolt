@@ -1027,6 +1027,49 @@ func TestBucket_Put_Multiple(t *testing.T) {
 	}
 }
 
+// Ensure that key or value slices are not stolen by the transaction when
+// putting rows (https://github.com/boltdb/bolt/issues/324)
+func TestBucket_Put_ReuseBuffer(t *testing.T) {
+	db := NewTestDB()
+	defer db.Close()
+
+	// Put some rows while reusing the key/value buffer
+	db.Update(func(tx *bolt.Tx) error {
+		bucket, err := tx.CreateBucketIfNotExists([]byte("test"))
+		if err != nil {
+			t.Fatalf("could not create test bucket: %s", err)
+		}
+		buf := make([]byte, 32)
+		for i := 0; i < 3; i++ {
+			s := fmt.Sprintf("%d", i)
+			value := []byte(s)
+			if len(value) > len(buf) {
+				t.Fatalf("k/v string is too long: %d", len(value))
+			}
+			copy(buf, value)
+			err = bucket.Put(buf[:len(value)], buf[:len(value)])
+			if err != nil {
+				t.Fatalf("could not insert k/v %d: %s", i, err)
+			}
+		}
+		return nil
+	})
+
+	// Check the rows are still there
+	db.View(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket([]byte("test"))
+		for i := 0; i < 3; i++ {
+			s := fmt.Sprintf("%d", i)
+			key := []byte(s)
+			value := bucket.Get(key)
+			if !bytes.Equal(value, key) {
+				t.Fatalf("key and value differ at %d: %x != %x", i, key, value)
+			}
+		}
+		return nil
+	})
+}
+
 // Ensure that a transaction can delete all key/value pairs and return to a single leaf page.
 func TestBucket_Delete_Quick(t *testing.T) {
 	if testing.Short() {
